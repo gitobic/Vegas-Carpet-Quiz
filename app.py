@@ -216,7 +216,7 @@ def main():
         st.markdown(
             "Test your knowledge of iconic Las Vegas casino carpets! "
             "Each carpet belongs to a famous Strip hotel."
-            "sourced from https://github.com/gitobic/Vegas-Carpet-Quiz"
+            "Sourced from https://github.com/gitobic/Vegas-Carpet-Quiz"
         )
 
 
