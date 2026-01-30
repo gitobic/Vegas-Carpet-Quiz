@@ -1,83 +1,415 @@
 import streamlit as st
 import random
+from dataclasses import dataclass
+from pathlib import Path
+from typing import List
 
-# Quiz data: image number -> hotel name
-ANSWERS = {
-    1: "Wynn",
-    2: "Park MGM",
-    3: "Mandalay Bay",
-    4: "Venetian",
-    5: "Mirage",
-    6: "Paris",
-    7: "Treasure Island",
-    8: "Caesar's Palace",
-    9: "Cosmopolitan",
-    10: "Resorts World",
-    11: "Excalibur",
-    12: "The Linq",
-    13: "Bellagio",
-    14: "Luxor",
-    15: "Planet Hollywood",
-    16: "New York",
-    17: "Circus Circus",
-    18: "Aria",
-    19: "Harrah's",
-    20: "MGM Grand",
+# Known types for reliable filename parsing
+KNOWN_TYPES = frozenset([
+    'amenity', 'buffet', 'casino', 'convention',
+    'hotel', 'lounge', 'restaurant', 'retail'
+])
+
+# Display names for types
+TYPE_DISPLAY = {
+    'amenity': 'Amenity',
+    'buffet': 'Buffet',
+    'casino': 'Casino',
+    'convention': 'Convention',
+    'hotel': 'Hotel',
+    'lounge': 'Lounge',
+    'restaurant': 'Restaurant',
+    'retail': 'Retail'
 }
 
-ALL_HOTELS = list(ANSWERS.values())
+
+@dataclass
+class CarpetImage:
+    """Represents a carpet image with its metadata."""
+    filename: str
+    facility: str
+    type: str
+    space: str
+    description: str
+
+    @property
+    def image_path(self) -> str:
+        return f"carpets/{self.filename}"
+
+    @property
+    def display_facility(self) -> str:
+        """Convert facility slug to display name."""
+        return self.facility.replace('-', ' ').title()
+
+    @property
+    def display_type(self) -> str:
+        return TYPE_DISPLAY.get(self.type, self.type.title())
+
+
+def parse_carpet_filename(filename: str) -> tuple:
+    """
+    Parse carpet filename to extract facility, type, and space.
+
+    Strategy: Types are a known set of 8 values. Split on '-' and scan
+    from left to find the type, which separates facility from space.
+
+    Example: "green-valley-ranch-amenity-drop_bar.jpg"
+    -> facility="green-valley-ranch", type="amenity", space="drop_bar"
+    """
+    base = filename.rsplit('.', 1)[0]
+    parts = base.split('-')
+
+    type_index = None
+    for i, part in enumerate(parts):
+        if part in KNOWN_TYPES:
+            type_index = i
+            break
+
+    if type_index is None:
+        raise ValueError(f"No known type found in filename: {filename}")
+
+    facility = '-'.join(parts[:type_index])
+    carpet_type = parts[type_index]
+    space = '-'.join(parts[type_index + 1:])
+
+    return facility, carpet_type, space
+
+
+@st.cache_data
+def load_carpet_data(carpets_dir: str = "carpets") -> List[CarpetImage]:
+    """Load all carpet images and their descriptions."""
+    carpets = []
+    carpet_path = Path(carpets_dir)
+
+    for jpg_file in sorted(carpet_path.glob("*.jpg")):
+        txt_file = jpg_file.with_suffix('.txt')
+
+        description = ""
+        if txt_file.exists():
+            description = txt_file.read_text().strip()
+
+        try:
+            facility, carpet_type, space = parse_carpet_filename(jpg_file.name)
+        except ValueError:
+            continue
+
+        carpets.append(CarpetImage(
+            filename=jpg_file.name,
+            facility=facility,
+            type=carpet_type,
+            space=space,
+            description=description
+        ))
+
+    return carpets
 
 
 def init_session_state():
-    """Initialize session state variables."""
-    if "current_question" not in st.session_state:
-        st.session_state.current_question = 1
-    if "score" not in st.session_state:
-        st.session_state.score = 0
-    if "answered" not in st.session_state:
-        st.session_state.answered = False
-    if "last_correct" not in st.session_state:
-        st.session_state.last_correct = None
-    if "quiz_complete" not in st.session_state:
-        st.session_state.quiz_complete = False
-    if "mode" not in st.session_state:
-        st.session_state.mode = None
-    if "mc_options" not in st.session_state:
-        st.session_state.mc_options = None
+    """Initialize all session state variables."""
+    defaults = {
+        'config': None,
+        'quiz_questions': [],
+        'current_index': 0,
+        'score': 0,
+        'answered': False,
+        'last_correct': None,
+        'mc_options': None,
+        'high_scores': {},
+        # Hard mode two-step tracking
+        'hard_step': 'facility',  # 'facility' or 'type'
+        'facility_correct': None,  # Track if facility was correct
+        'selected_facility': None,  # What user selected for facility
+    }
+
+    for key, value in defaults.items():
+        if key not in st.session_state:
+            st.session_state[key] = value
 
 
-def get_mc_options(correct_answer):
-    """Generate 4 multiple choice options including the correct answer."""
-    wrong_answers = [h for h in ALL_HOTELS if h != correct_answer]
-    options = random.sample(wrong_answers, 3) + [correct_answer]
+def start_quiz(question_count: int, difficulty: str):
+    """Initialize a new quiz with random questions."""
+    all_carpets = load_carpet_data()
+
+    selected = random.sample(all_carpets, min(question_count, len(all_carpets)))
+
+    st.session_state.config = {'question_count': question_count, 'difficulty': difficulty}
+    st.session_state.quiz_questions = selected
+    st.session_state.current_index = 0
+    st.session_state.score = 0
+    st.session_state.answered = False
+    st.session_state.last_correct = None
+    st.session_state.mc_options = None
+    st.session_state.hard_step = 'facility'
+    st.session_state.facility_correct = None
+    st.session_state.selected_facility = None
+
+
+def get_facility_options(current_carpet: CarpetImage, all_carpets: List[CarpetImage]) -> List[str]:
+    """Generate 4 facility options including the correct answer."""
+    correct = current_carpet.display_facility
+    all_facilities = list(set(
+        c.display_facility for c in all_carpets
+        if c.facility != current_carpet.facility
+    ))
+    wrong_answers = random.sample(all_facilities, min(3, len(all_facilities)))
+    options = wrong_answers[:3] + [correct]
     random.shuffle(options)
     return options
 
 
-def check_answer(user_answer, correct_answer):
-    """Check if the user's answer is correct (case-insensitive)."""
-    return user_answer.strip().lower() == correct_answer.lower()
+def get_type_options() -> List[str]:
+    """Return all 8 type options."""
+    return list(TYPE_DISPLAY.values())
 
 
 def next_question():
     """Move to the next question."""
-    if st.session_state.current_question < 20:
-        st.session_state.current_question += 1
-        st.session_state.answered = False
-        st.session_state.last_correct = None
-        st.session_state.mc_options = None
-    else:
-        st.session_state.quiz_complete = True
-
-
-def restart_quiz():
-    """Reset the quiz to the beginning."""
-    st.session_state.current_question = 1
-    st.session_state.score = 0
+    st.session_state.current_index += 1
     st.session_state.answered = False
     st.session_state.last_correct = None
-    st.session_state.quiz_complete = False
     st.session_state.mc_options = None
+    st.session_state.hard_step = 'facility'
+    st.session_state.facility_correct = None
+    st.session_state.selected_facility = None
+
+
+def complete_quiz():
+    """Handle quiz completion and high score tracking."""
+    config = st.session_state.config
+    score = st.session_state.score
+    score_key = (config['difficulty'], config['question_count'])
+
+    if score_key not in st.session_state.high_scores:
+        st.session_state.high_scores[score_key] = score
+    else:
+        st.session_state.high_scores[score_key] = max(
+            st.session_state.high_scores[score_key], score
+        )
+
+
+def show_landing_page():
+    """Display the landing page with quiz configuration options."""
+    st.title("Vegas Carpet Quiz")
+    st.markdown("*Can you identify the Las Vegas location by its carpet?*")
+
+    st.markdown("---")
+
+    col1, col2 = st.columns(2)
+    with col1:
+        st.markdown(
+            "**Source:** [GitHub](https://github.com/gitobic/Vegas-Carpet-Quiz)"
+        )
+    with col2:
+        st.markdown(
+            "**Photos:** [Brent Maynard](https://www.brentmaynard.com/casino-carpet.html)"
+        )
+
+    st.markdown("---")
+    st.subheader("Configure Your Quiz")
+
+    question_count = st.radio(
+        "Number of Questions:",
+        options=[10, 20, 50],
+        horizontal=True,
+        index=1
+    )
+
+    difficulty = st.radio(
+        "Difficulty:",
+        options=["easy", "hard"],
+        format_func=lambda x: "Easy (Facility only)" if x == "easy" else "Hard (Facility + Area Type)",
+        horizontal=True
+    )
+
+    # Explain difficulty
+    if difficulty == "easy":
+        st.caption("Identify which facility (casino/hotel) has this carpet.")
+    else:
+        st.caption("Two-step challenge: First identify the facility, then the area type.")
+
+    score_key = (difficulty, question_count)
+    if score_key in st.session_state.high_scores:
+        best = st.session_state.high_scores[score_key]
+        st.info(f"Your best score: {best}/{question_count}")
+
+    if st.button("Start Quiz", type="primary", width="stretch"):
+        start_quiz(question_count, difficulty)
+        st.rerun()
+
+
+def show_quiz_question():
+    """Display the current quiz question."""
+    config = st.session_state.config
+    questions = st.session_state.quiz_questions
+    idx = st.session_state.current_index
+    current = questions[idx]
+
+    col1, col2 = st.columns(2)
+    with col1:
+        st.metric("Score", f"{st.session_state.score}/{config['question_count']}")
+    with col2:
+        st.metric("Question", f"{idx + 1}/{config['question_count']}")
+
+    st.progress((idx + 1) / config['question_count'])
+
+    st.image(current.image_path, width="stretch")
+
+    if config['difficulty'] == "easy":
+        show_easy_mode(current)
+    else:
+        show_hard_mode(current)
+
+
+def show_easy_mode(current: CarpetImage):
+    """Easy mode: just identify the facility."""
+    if st.session_state.mc_options is None:
+        all_carpets = load_carpet_data()
+        st.session_state.mc_options = get_facility_options(current, all_carpets)
+
+    if not st.session_state.answered:
+        st.markdown("**Which facility has this carpet?**")
+
+        for option in st.session_state.mc_options:
+            if st.button(option, key=f"mc_{option}", width="stretch"):
+                is_correct = option == current.display_facility
+                st.session_state.answered = True
+                st.session_state.last_correct = is_correct
+                if is_correct:
+                    st.session_state.score += 1
+                st.rerun()
+    else:
+        if st.session_state.last_correct:
+            st.success(f"Correct! {current.display_facility}")
+        else:
+            st.error(f"Wrong! The correct answer is **{current.display_facility}**")
+
+        if current.description:
+            st.info(f"**About this carpet:** {current.description}")
+
+        if st.button("Next Question", type="primary", width="stretch"):
+            next_question()
+            if st.session_state.current_index >= st.session_state.config['question_count']:
+                complete_quiz()
+            st.rerun()
+
+
+def show_hard_mode(current: CarpetImage):
+    """Hard mode: two-step - identify facility, then type."""
+
+    if st.session_state.hard_step == 'facility':
+        # Step 1: Facility selection
+        if st.session_state.mc_options is None:
+            all_carpets = load_carpet_data()
+            st.session_state.mc_options = get_facility_options(current, all_carpets)
+
+        st.markdown("**Step 1: Which facility has this carpet?**")
+
+        for option in st.session_state.mc_options:
+            if st.button(option, key=f"facility_{option}", width="stretch"):
+                is_correct = option == current.display_facility
+                st.session_state.facility_correct = is_correct
+                st.session_state.selected_facility = option
+                st.session_state.hard_step = 'type'
+                st.session_state.mc_options = None  # Clear for type options
+                st.rerun()
+
+    elif st.session_state.hard_step == 'type' and not st.session_state.answered:
+        # Step 2: Type selection
+        # Show facility result
+        if st.session_state.facility_correct:
+            st.success(f"Step 1: Correct! {current.display_facility}")
+        else:
+            st.error(f"Step 1: Wrong! It was **{current.display_facility}** (you chose {st.session_state.selected_facility})")
+
+        st.markdown("**Step 2: What type of area is this?**")
+
+        type_options = get_type_options()
+        for option in type_options:
+            if st.button(option, key=f"type_{option}", width="stretch"):
+                type_correct = option == current.display_type
+                # Both must be correct to score
+                both_correct = st.session_state.facility_correct and type_correct
+                st.session_state.answered = True
+                st.session_state.last_correct = both_correct
+                if both_correct:
+                    st.session_state.score += 1
+                # Store type result for feedback
+                st.session_state.type_correct = type_correct
+                st.session_state.selected_type = option
+                st.rerun()
+
+    else:
+        # Show final feedback
+        if st.session_state.facility_correct:
+            st.success(f"Step 1: Correct! {current.display_facility}")
+        else:
+            st.error(f"Step 1: Wrong! It was **{current.display_facility}**")
+
+        type_correct = getattr(st.session_state, 'type_correct', False)
+        selected_type = getattr(st.session_state, 'selected_type', '')
+
+        if type_correct:
+            st.success(f"Step 2: Correct! {current.display_type}")
+        else:
+            st.error(f"Step 2: Wrong! It was **{current.display_type}** (you chose {selected_type})")
+
+        # Overall result
+        if st.session_state.last_correct:
+            st.success("Both correct! +1 point")
+        else:
+            st.warning("Must get both correct to score.")
+
+        if current.description:
+            st.info(f"**About this carpet:** {current.description}")
+
+        if st.button("Next Question", type="primary", width="stretch"):
+            next_question()
+            if st.session_state.current_index >= st.session_state.config['question_count']:
+                complete_quiz()
+            st.rerun()
+
+
+def show_quiz_complete():
+    """Display the quiz complete screen with score and high score."""
+    config = st.session_state.config
+    score = st.session_state.score
+    total = config['question_count']
+    score_key = (config['difficulty'], config['question_count'])
+    best_score = st.session_state.high_scores.get(score_key, score)
+
+    st.title("Vegas Carpet Quiz")
+    st.markdown("---")
+    st.subheader("Quiz Complete!")
+
+    col1, col2 = st.columns(2)
+    with col1:
+        st.metric("Your Score", f"{score}/{total}")
+    with col2:
+        st.metric("Best Score", f"{best_score}/{total}")
+
+    percentage = (score / total) * 100
+    if percentage == 100:
+        st.balloons()
+        st.success("Perfect score! You're a true Vegas carpet expert!")
+    elif percentage >= 80:
+        st.success("Excellent! You really know your Vegas carpets!")
+    elif percentage >= 60:
+        st.info("Good job! Keep practicing!")
+    else:
+        st.warning("Time to visit more Vegas casinos!")
+
+    if score == best_score and score > 0:
+        st.success("New personal best!")
+
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("Play Again", width="stretch"):
+            start_quiz(config['question_count'], config['difficulty'])
+            st.rerun()
+    with col2:
+        if st.button("Change Settings", width="stretch"):
+            st.session_state.config = None
+            st.rerun()
 
 
 def main():
@@ -87,137 +419,32 @@ def main():
         layout="centered",
     )
 
-    st.title("🎰 Vegas Carpet Quiz")
-    st.markdown("*Can you identify the Las Vegas hotel by its carpet?*")
-
     init_session_state()
 
-    # Mode selection
-    if st.session_state.mode is None:
-        st.markdown("---")
-        st.subheader("Choose Your Quiz Mode")
-        col1, col2 = st.columns(2)
-        with col1:
-            if st.button("🎯 Multiple Choice", use_container_width=True):
-                st.session_state.mode = "mc"
-                st.rerun()
-        with col2:
-            if st.button("⌨️ Type Answer", use_container_width=True):
-                st.session_state.mode = "text"
-                st.rerun()
-        st.info("Multiple Choice: Pick from 4 options\n\nType Answer: Enter the hotel name yourself")
-        return
-
-    # Quiz complete screen
-    if st.session_state.quiz_complete:
-        st.markdown("---")
-        st.subheader("Quiz Complete!")
-        st.metric("Final Score", f"{st.session_state.score} / 20")
-
-        percentage = (st.session_state.score / 20) * 100
-        if percentage == 100:
-            st.balloons()
-            st.success("Perfect score! You're a Vegas carpet expert!")
-        elif percentage >= 80:
-            st.success("Great job! You really know your Vegas carpets!")
-        elif percentage >= 60:
-            st.info("Not bad! Keep practicing!")
-        else:
-            st.warning("Time to visit more Vegas casinos!")
-
-        col1, col2 = st.columns(2)
-        with col1:
-            if st.button("🔄 Play Again", use_container_width=True):
-                restart_quiz()
-                st.rerun()
-        with col2:
-            if st.button("🔀 Switch Mode", use_container_width=True):
-                restart_quiz()
-                st.session_state.mode = None
-                st.rerun()
-        return
-
-    # Display score and progress
-    col1, col2 = st.columns(2)
-    with col1:
-        st.metric("Score", f"{st.session_state.score} / 20")
-    with col2:
-        st.metric("Question", f"{st.session_state.current_question} / 20")
-
-    st.progress(st.session_state.current_question / 20)
-
-    # Display current carpet image
-    current_q = st.session_state.current_question
-    correct_answer = ANSWERS[current_q]
-
-    st.image(
-        f"images/{current_q}.jpeg",
-        caption=f"Carpet #{current_q}",
-        use_container_width=True,
-    )
-
-    # Answer input based on mode
-    if not st.session_state.answered:
-        if st.session_state.mode == "mc":
-            # Multiple choice mode
-            if st.session_state.mc_options is None:
-                st.session_state.mc_options = get_mc_options(correct_answer)
-
-            st.markdown("**Which hotel has this carpet?**")
-            for option in st.session_state.mc_options:
-                if st.button(option, key=f"mc_{option}", use_container_width=True):
-                    is_correct = option == correct_answer
-                    st.session_state.answered = True
-                    st.session_state.last_correct = is_correct
-                    if is_correct:
-                        st.session_state.score += 1
-                    st.rerun()
-        else:
-            # Text input mode
-            st.markdown("**Type the hotel name:**")
-            with st.form("answer_form"):
-                user_answer = st.text_input("Hotel name", label_visibility="collapsed")
-                submitted = st.form_submit_button("Submit", use_container_width=True)
-                if submitted and user_answer:
-                    is_correct = check_answer(user_answer, correct_answer)
-                    st.session_state.answered = True
-                    st.session_state.last_correct = is_correct
-                    if is_correct:
-                        st.session_state.score += 1
-                    st.rerun()
+    if st.session_state.config is None:
+        show_landing_page()
+    elif st.session_state.current_index >= st.session_state.config['question_count']:
+        show_quiz_complete()
     else:
-        # Show feedback
-        if st.session_state.last_correct:
-            st.success(f"✅ Correct! It's {correct_answer}!")
-        else:
-            st.error(f"❌ Wrong! The correct answer is **{correct_answer}**")
+        show_quiz_question()
 
-        if st.button("Next Question ➡️", use_container_width=True):
-            next_question()
-            st.rerun()
-
-    # Sidebar with controls
     with st.sidebar:
-        st.markdown("### Controls")
-        mode_label = "Multiple Choice" if st.session_state.mode == "mc" else "Type Answer"
-        st.text(f"Mode: {mode_label}")
+        st.markdown("### Vegas Carpet Quiz")
 
-        if st.button("🔀 Switch Mode"):
-            restart_quiz()
-            st.session_state.mode = None
-            st.rerun()
+        if st.session_state.config is not None:
+            config = st.session_state.config
+            diff_label = "Easy" if config['difficulty'] == "easy" else "Hard"
+            st.text(f"Difficulty: {diff_label}")
+            st.text(f"Questions: {config['question_count']}")
 
-        if st.button("🔄 Restart Quiz"):
-            restart_quiz()
-            st.rerun()
+            if st.button("Quit Quiz"):
+                st.session_state.config = None
+                st.rerun()
 
         st.markdown("---")
-        st.markdown("### About")
-        st.markdown(
-            "Test your knowledge of iconic Las Vegas casino carpets! "
-            "Each carpet belongs to a famous Strip hotel."
-            "Sourced from https://github.com/gitobic/Vegas-Carpet-Quiz"
-        )
+        st.markdown("### Credits")
+        st.markdown("[Source Code](https://github.com/gitobic/Vegas-Carpet-Quiz)")
+        st.markdown("[Photos by Brent Maynard](https://www.brentmaynard.com/casino-carpet.html)")
 
 
 if __name__ == "__main__":
