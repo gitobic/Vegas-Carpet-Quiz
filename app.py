@@ -1,4 +1,5 @@
 import streamlit as st
+import streamlit_shadcn_ui as ui
 import random
 import requests
 import json
@@ -23,6 +24,16 @@ TYPE_DISPLAY = {
     'lounge': 'Lounge',
     'restaurant': 'Restaurant',
     'retail': 'Retail'
+}
+
+# Taglines based on quiz configuration
+TAGLINES = {
+    (10, 'easy'): "Casual Vacationer",
+    (10, 'hard'): "Annual Convention Attendee",
+    (20, 'easy'): "Strip Regular",
+    (20, 'hard'): "Frequent Flyer",
+    (50, 'easy'): "Vegas Veteran",
+    (50, 'hard'): "Carpet Nerd",
 }
 
 MAX_LEADERBOARD_ENTRIES = 10
@@ -284,78 +295,141 @@ def complete_quiz():
         )
 
 
+def get_estimated_time(question_count: int) -> str:
+    """Estimate quiz completion time."""
+    minutes = question_count // 4  # ~15 seconds per question
+    if minutes < 1:
+        return "~1 min"
+    return f"~{minutes} min"
+
+
+def get_average_score(leaderboard: dict, difficulty: str, question_count: int) -> float:
+    """Calculate average score from leaderboard for a category."""
+    category = f"{difficulty}_{question_count}"
+    if category not in leaderboard or not leaderboard[category]:
+        return 0
+    scores = [entry['score'] for entry in leaderboard[category]]
+    return sum(scores) / len(scores)
+
+
 def show_landing_page():
     """Display the landing page with quiz configuration options."""
-    st.title("Vegas Carpet Quiz")
+    st.markdown("# 🎰 Vegas Carpet Quiz")
     st.markdown("*Can you identify the Las Vegas location by its carpet?*")
 
-    st.markdown("---")
+    # Subtle stats (reduced visual weight)
+    st.caption("556 carpets • 70+ Vegas properties • No repeats per quiz")
 
+    st.markdown("")
+
+    # === STEP 1: Quiz Length ===
+    st.markdown("##### How long do you want to play?")
+    question_count = st.radio(
+        "Quiz length",
+        options=[10, 20, 50],
+        index=1,
+        horizontal=True,
+        label_visibility="collapsed"
+    )
+
+    st.markdown("")
+
+    # === STEP 2: Difficulty ===
+    st.markdown("##### Choose your challenge")
     col1, col2 = st.columns(2)
     with col1:
-        st.markdown(
-            "**Source:** [GitHub](https://github.com/gitobic/Vegas-Carpet-Quiz)"
+        easy_selected = st.button(
+            "🎯 Easy",
+            key="easy_btn",
+            width="stretch",
+            type="secondary"
         )
+        st.caption("Popular carpets • Guess the facility")
     with col2:
-        st.markdown(
-            "**Photos:** [Brent Maynard](https://www.brentmaynard.com/casino-carpet.html)"
+        hard_selected = st.button(
+            "🔥 Hard",
+            key="hard_btn",
+            width="stretch",
+            type="secondary"
         )
+        st.caption("Deep cuts • Facility + area type")
 
-    st.markdown("---")
-    st.subheader("Configure Your Quiz")
+    # Track difficulty selection in session state
+    if 'selected_difficulty' not in st.session_state:
+        st.session_state.selected_difficulty = 'easy'
+    if easy_selected:
+        st.session_state.selected_difficulty = 'easy'
+    if hard_selected:
+        st.session_state.selected_difficulty = 'hard'
 
-    question_count = st.radio(
-        "Number of Questions:",
-        options=[10, 20, 50],
-        horizontal=True,
-        index=1
-    )
+    difficulty = st.session_state.selected_difficulty
 
-    difficulty = st.radio(
-        "Difficulty:",
-        options=["easy", "hard"],
-        format_func=lambda x: "Easy (Facility only)" if x == "easy" else "Hard (Facility + Area Type)",
-        horizontal=True
-    )
+    # Show current selection with tagline
+    diff_display = "Easy" if difficulty == "easy" else "Hard"
+    tagline = TAGLINES.get((question_count, difficulty), "")
+    st.markdown(f"**Selected:** {diff_display} mode")
+    if tagline:
+        st.markdown(f"*\"{tagline}\"*")
 
-    if difficulty == "easy":
-        st.caption("Identify which facility (casino/hotel) has this carpet.")
-    else:
-        st.caption("Two-step challenge: First identify the facility, then the area type.")
+    st.markdown("")
 
-    score_key = (difficulty, question_count)
-    if score_key in st.session_state.high_scores:
-        best = st.session_state.high_scores[score_key]
-        st.info(f"Your session best: {best}/{question_count}")
+    # === PRIMARY CTA: Start Quiz ===
+    estimated_time = get_estimated_time(question_count)
+    diff_desc = "Guess the facility" if difficulty == "easy" else "Facility + area type"
 
-    if st.button("Start Quiz", type="primary", width="stretch"):
+    if st.button("🎰 Start Quiz", key="start_btn", type="primary", width="stretch"):
         start_quiz(question_count, difficulty)
         st.rerun()
 
-    # Show leaderboard on landing page
-    show_leaderboard_section()
+    # Microcopy below button
+    st.caption(f"{question_count} questions • {diff_display} mode • {estimated_time}")
+
+    # Session best (if exists)
+    score_key = (difficulty, question_count)
+    if score_key in st.session_state.high_scores:
+        best = st.session_state.high_scores[score_key]
+        st.success(f"Your best: {best}/{question_count}")
+
+    st.markdown("---")
+
+    # === LEADERBOARD TEASER (collapsed) ===
+    show_leaderboard_teaser(difficulty, question_count)
 
 
-def show_leaderboard_section():
-    """Display the global leaderboard."""
+def show_leaderboard_teaser(difficulty: str, question_count: int):
+    """Show a lightweight leaderboard teaser, with full board in expander."""
     if not get_gist_config():
         return
 
-    st.markdown("---")
-    st.subheader("Global Leaderboard")
-
     leaderboard = fetch_leaderboard()
+
+    # Calculate average for current selection
+    avg_score = get_average_score(leaderboard, difficulty, question_count)
+
+    if avg_score > 0:
+        st.markdown("##### Can you beat the average?")
+        diff_display = "Easy" if difficulty == "easy" else "Hard"
+        st.markdown(f"**{diff_display} ({question_count}Q) average:** {avg_score:.1f}/{question_count}")
+    else:
+        st.markdown("##### Be the first on the leaderboard!")
+        st.caption("No scores recorded yet for this mode.")
+
+    # Full leaderboard in expander (collapsed by default)
+    with st.expander("View Full Leaderboard"):
+        show_full_leaderboard(leaderboard)
+
+
+def show_full_leaderboard(leaderboard: dict):
+    """Display the full global leaderboard."""
     if not leaderboard:
         st.caption("No scores yet. Be the first!")
         return
 
-    # Create tabs for different categories
     categories = list(leaderboard.keys())
     if not categories:
         st.caption("No scores yet. Be the first!")
         return
 
-    # Format category names for display
     def format_category(cat):
         diff, count = cat.split('_')
         return f"{diff.title()} ({count}Q)"
@@ -381,11 +455,16 @@ def show_quiz_question():
     idx = st.session_state.current_index
     current = questions[idx]
 
-    col1, col2 = st.columns(2)
-    with col1:
-        st.metric("Score", f"{st.session_state.score}/{config['question_count']}")
-    with col2:
-        st.metric("Question", f"{idx + 1}/{config['question_count']}")
+    # Score and question badges
+    diff_label = "Easy" if config['difficulty'] == "easy" else "Hard"
+    ui.badges(
+        badge_list=[
+            (f"Score: {st.session_state.score}/{config['question_count']}", "default"),
+            (f"Q {idx + 1}/{config['question_count']}", "secondary"),
+            (diff_label, "outline")
+        ],
+        key=f"quiz_badges_{idx}"
+    )
 
     st.progress((idx + 1) / config['question_count'])
 
@@ -507,15 +586,24 @@ def show_quiz_complete():
     score_key = (config['difficulty'], config['question_count'])
     best_score = st.session_state.high_scores.get(score_key, score)
 
-    st.title("Vegas Carpet Quiz")
-    st.markdown("---")
-    st.subheader("Quiz Complete!")
+    st.markdown("# 🎰 Quiz Complete!")
 
     col1, col2 = st.columns(2)
     with col1:
-        st.metric("Your Score", f"{score}/{total}")
+        percentage = int((score / total) * 100)
+        ui.metric_card(
+            title="Your Score",
+            content=f"{score}/{total}",
+            description=f"{percentage}% correct",
+            key="score_card"
+        )
     with col2:
-        st.metric("Session Best", f"{best_score}/{total}")
+        ui.metric_card(
+            title="Session Best",
+            content=f"{best_score}/{total}",
+            description="personal record",
+            key="best_card"
+        )
 
     percentage = (score / total) * 100
     if percentage == 100:
@@ -582,38 +670,78 @@ def main():
         show_quiz_question()
 
     with st.sidebar:
-        st.markdown("### Vegas Carpet Quiz")
+        st.markdown("### 🎰 Vegas Carpet Quiz")
 
+        # Current quiz status (if playing)
         if st.session_state.config is not None:
             config = st.session_state.config
             diff_label = "Easy" if config['difficulty'] == "easy" else "Hard"
-            st.text(f"Difficulty: {diff_label}")
-            st.text(f"Questions: {config['question_count']}")
+            st.caption(f"Playing: {diff_label} • {config['question_count']}Q")
 
-            if st.button("Quit Quiz"):
+            if st.button("✕ Quit Quiz", width="stretch"):
                 st.session_state.config = None
                 st.rerun()
-
-        # Leaderboard in sidebar
-        if get_gist_config():
             st.markdown("---")
-            with st.expander("Global Leaderboard"):
+
+        # Leaderboard in sidebar (FIRST - most prominent)
+        if get_gist_config():
+            with st.expander("📊 Leaderboard", expanded=False):
                 leaderboard = fetch_leaderboard()
-                if leaderboard:
-                    for category in sorted(leaderboard.keys()):
-                        diff, count = category.split('_')
-                        st.markdown(f"**{diff.title()} ({count}Q)**")
-                        for i, entry in enumerate(leaderboard[category][:5], 1):
-                            medal = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else f"{i}."
+                # Show all 6 permutations in logical order
+                all_categories = [
+                    ("easy_10", "Easy (10Q)"),
+                    ("easy_20", "Easy (20Q)"),
+                    ("easy_50", "Easy (50Q)"),
+                    ("hard_10", "Hard (10Q)"),
+                    ("hard_20", "Hard (20Q)"),
+                    ("hard_50", "Hard (50Q)"),
+                ]
+                has_scores = False
+                for cat_key, cat_label in all_categories:
+                    if cat_key in leaderboard and leaderboard[cat_key]:
+                        has_scores = True
+                        count = cat_key.split('_')[1]
+                        st.caption(cat_label)
+                        for i, entry in enumerate(leaderboard[cat_key][:3], 1):
+                            medal = "🥇" if i == 1 else "🥈" if i == 2 else "🥉"
                             st.text(f"{medal} {entry['name']}: {entry['score']}/{count}")
-                        st.markdown("")
-                else:
+                if not has_scores:
                     st.caption("No scores yet!")
 
-        st.markdown("---")
-        st.markdown("### Credits")
-        st.markdown("[Source Code](https://github.com/gitobic/Vegas-Carpet-Quiz)")
-        st.markdown("[Photos by Brent Maynard](https://www.brentmaynard.com/casino-carpet.html)")
+        # How to Play & Scoring (combined)
+        with st.expander("📖 How to Play & Scoring"):
+            st.markdown("""
+**Easy Mode**
+- Pick the correct facility from 4 options
+- 1 point per correct answer
+
+**Hard Mode**
+- First: identify the facility
+- Then: identify the area type
+- Must get BOTH correct to score
+
+---
+
+**Scoring**
+- 🏆 **100%** — Vegas Carpet Expert!
+- ⭐ **80%+** — Excellent knowledge
+- 👍 **60%+** — Good job, keep practicing
+- 🎰 **<60%** — Time to visit more casinos!
+            """)
+
+        # About
+        with st.expander("ℹ️ About"):
+            st.markdown("""
+556 carpet photos from 70+ Las Vegas properties.
+
+**Photo Credits**
+[Brent Maynard](https://www.brentmaynard.com/casino-carpet.html)
+
+**Source Code**
+[GitHub](https://github.com/gitobic/Vegas-Carpet-Quiz)
+
+Built with Streamlit by T. Gossen & Claude
+            """)
 
 
 if __name__ == "__main__":

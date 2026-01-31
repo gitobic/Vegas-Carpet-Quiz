@@ -15,7 +15,8 @@ A Streamlit-based quiz app where users identify Las Vegas casino/hotel locations
 │   ├── [facility]-[type]-[space].jpg
 │   └── [facility]-[type]-[space].txt
 ├── .streamlit/
-│   └── config.toml        # Streamlit configuration
+│   ├── config.toml        # Streamlit theme/configuration
+│   └── secrets.toml       # Gist credentials (gitignored)
 ├── requirements.txt       # Python dependencies
 └── README.md
 ```
@@ -52,6 +53,37 @@ aria-casino-baccarat.txt → "Baccarat February 2022"
 - Step 1: Identify the facility (4 options)
 - Step 2: Identify the area type (8 options)
 - Must get BOTH correct to score 1 point
+
+### Taglines
+Based on question count and difficulty, users see a "player type" tagline:
+| Questions | Easy | Hard |
+|-----------|------|------|
+| 10 | Casual Vacationer | Annual Convention Attendee |
+| 20 | Strip Regular | Frequent Flyer |
+| 50 | Vegas Veteran | Carpet Nerd |
+
+## Global Leaderboard
+
+Scores are stored in a GitHub Gist for persistence across sessions.
+
+### Configuration
+Requires `.streamlit/secrets.toml`:
+```toml
+[gist]
+token = "ghp_your_personal_access_token"
+gist_id = "your_gist_id"
+```
+
+### Data Structure
+Leaderboard stored as JSON with categories like `easy_10`, `hard_50`:
+```json
+{
+  "easy_10": [{"name": "Player", "score": 8, "date": "2025-01-30"}],
+  "hard_20": [...]
+}
+```
+
+Top 10 scores kept per category, sorted by score descending.
 
 ## Session State
 Key variables in `st.session_state`:
