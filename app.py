@@ -1,5 +1,4 @@
 import streamlit as st
-import streamlit_shadcn_ui as ui
 import random
 import requests
 import json
@@ -455,16 +454,9 @@ def show_quiz_question():
     idx = st.session_state.current_index
     current = questions[idx]
 
-    # Score and question badges
+    # Score and question info
     diff_label = "Easy" if config['difficulty'] == "easy" else "Hard"
-    ui.badges(
-        badge_list=[
-            (f"Score: {st.session_state.score}/{config['question_count']}", "default"),
-            (f"Q {idx + 1}/{config['question_count']}", "secondary"),
-            (diff_label, "outline")
-        ],
-        key=f"quiz_badges_{idx}"
-    )
+    st.caption(f"Score: {st.session_state.score}/{config['question_count']} • Q {idx + 1}/{config['question_count']} • {diff_label}")
 
     st.progress((idx + 1) / config['question_count'])
 
@@ -591,19 +583,9 @@ def show_quiz_complete():
     col1, col2 = st.columns(2)
     with col1:
         percentage = int((score / total) * 100)
-        ui.metric_card(
-            title="Your Score",
-            content=f"{score}/{total}",
-            description=f"{percentage}% correct",
-            key="score_card"
-        )
+        st.metric(label="Your Score", value=f"{score}/{total}", delta=f"{percentage}% correct")
     with col2:
-        ui.metric_card(
-            title="Session Best",
-            content=f"{best_score}/{total}",
-            description="personal record",
-            key="best_card"
-        )
+        st.metric(label="Session Best", value=f"{best_score}/{total}", delta="personal record")
 
     percentage = (score / total) * 100
     if percentage == 100:
